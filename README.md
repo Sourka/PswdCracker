@@ -1,1 +1,3 @@
 # PswdCracker
+Work in progress...
+Basic version of program available.

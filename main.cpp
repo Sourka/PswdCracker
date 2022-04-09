@@ -1,47 +1,12 @@
-/* Simple program guessing passwords, written by Sourka.
- * It requests for a password and hints, helping (or not) to guess the password.
- * Set of characters/words being checked is created based on the password.
- * The program does not support passphrases yet. */
+#include "main.h"
 
-#include <iostream>
-#include <stdexcept>
-#include <functional>
-#include <limits>
-#include <cmath>
-
-struct Args;
-typedef std::function<bool(std::string&)> pswdChecker;
-
-// IO, and other
-template<typename T> bool input(T&);
-template<typename T> bool loopedInput(T&);
-template<typename T> bool loopedInput(T&, std::function<bool(T&)>&);
-std::string getPassword();
-std::string getPossibleChars(std::string&);
-bool getLenHint(Args&, uint32_t);
-double getMs(double);
-
-// UE–related
-bool welcome();
-bool logAction(uint32_t, uint32_t);
-bool showResult(bool found, double& t);
-
-// The „guessor”
-bool guess(Args&, const pswdChecker&);
-bool match(std::string&, uint32_t, std::string&, uint32_t, const pswdChecker&);
-
-// Main function
-bool turnErrCatcher();
-bool turn(double&);
-bool programLoop();
+/* Setting here „false” will disable logging to console during time–consuming operations.
+ * Doing it by program parameters is not available now, and would be slower. */
+#define SUBLOGS true
 
 
-struct Args {
-	uint32_t minLength, maxLength;
-	std::string possibleChars;
-};
-
-// ················· //
+/* Arguments, that control how string is interpreted, are chars/strings,
+ * not template types. */
 
 bool rescueCin() {
 	std::cin.clear();
@@ -49,18 +14,45 @@ bool rescueCin() {
 	return true;
 }
 
-template<typename T> bool input(T& data) {
+template<typename T> bool typeDependentInput(T& data, char) {
 	std::cin >> data;
+	return true;
+}
+
+// The second parameter is hold for compatibility
+template<> bool typeDependentInput(std::string& str, char) {
+	rescueCin();
+	std::getline(std::cin, str);
+	return true;
+}
+
+// Extracts words to array, breaks if delim character is found.
+template<> bool typeDependentInput(strarr& arr, char delim) {
+	std::string word;
+	for(uint32_t i = 0; i < 1000; ++i) {
+	// for(auto& item: arr) {
+		if(std::cin.peek() == delim && i > 0) break;
+		std::cin >> word;
+		arr.push_back(word);
+	}
+	return true;
+}
+
+template<typename T> bool input(T& data) {
+	// rescueCin();
+	typeDependentInput(data, '\n');
 	if(std::cin.fail()) {
 		rescueCin();
+		return false;
 	} else if(!std::cin.good()) { // bad or eof
 		throw std::runtime_error("Some error on console input.");
 	}
 	return true;
 }
 
+// Gives additional attemps to user.
 template<typename T> bool loopedInput(T& data) {
-	for(uint32_t i = 0; i < 4; ++i) {
+	for(uint32_t i = 0; i < 3; ++i) {
 		// input goes to referenced variable
 		if(!input(data)) {
 			std::cout << "Uncorrect data, please try again." << std::endl;
@@ -69,41 +61,55 @@ template<typename T> bool loopedInput(T& data) {
 	throw std::runtime_error("Input request dismissed.");
 }
 
+// Variant with anonymous function as validator.
 template<typename T> bool loopedInput(T& data, std::function<bool(T&)>& validator) {
-	for(uint32_t i = 0; i < 4; ++i) {
+	for(uint32_t i = 0; i < 3; ++i) {
 		// input goes to referenced variable
 		if(!input(data) || !validator(data)) {
-			std::cout << "Uncorrect data, please try again." << std::endl;			
+			std::cout << "Uncorrect data, please try again." << std::endl;
 		} else return true;
 	}
 	throw std::runtime_error("Input request dismissed.");
 }
 
-std::string getPassword() {
-	std::cout << "Provide the password:" << std::endl;
-	std::string pswd;
+strarr getPassword() {
+	std::cout << "Provide the password (no longer than 40 characters or words):" << std::endl;
+	strarr pswd;
 	loopedInput(pswd);
-	if(pswd.size() > 40) {
-		std::runtime_error e("Password too long.");
-		throw e;
+	// This check will work good both for strings and arrays.
+	if(!pswd.size()) {
+		throw std::runtime_error("Password is empty.");
+	} else if(pswd.size() > 40 || pswd.at(0).size() > 40) {
+		throw std::runtime_error("Password too long.");
 	}
 	return pswd;
 }
 
-// Returns set of characters with only one occurence of each.
-std::string getPossibleChars(std::string& txt) {
+// template: Only strings and arrays of strings supported
+template<> strarr getPossibleWords(strarr& arr) {
+	auto copy = arr;
+	// Sorting shuffles characters, and allows to remove all duplicates by std::unique
+	// NOTE: only characters and strings, if the chain contains other data, it may not work.
+	std::sort(copy.begin(), copy.end());
+	std::unique(copy.begin(), copy.end());
+	return copy;
+}
+
+// template: Only strings and arrays of strings supported
+// NOTE: it looks like std::unique does not work for strings.
+template<> std::string getPossibleWords(std::string& str) {
 	std::string filtered;
-	for(auto ch: txt) {
-		int32_t pos = filtered.find(ch);
-		if(pos == -1)
-			filtered += ch;
+	for(auto word: str) {
+		auto pos = std::find(filtered.begin(), filtered.end(), word);
+		if(pos == filtered.end())
+			filtered += word;
 		else continue;
 	}
 	return filtered;
 }
 
 // Gets min and max length hits from user and manages those inputs.
-bool getLenHint(Args& args, uint32_t pswdLength) {
+template<typename Chain> bool getLenHint(Args<Chain>& args, uint32_t pswdLength) {
 	std::function<bool(uint32_t&)> validator = [pswdLength, &args](uint32_t& n) -> bool {
 		return n > 0 &&
 			n < pswdLength + 30 &&
@@ -114,8 +120,6 @@ bool getLenHint(Args& args, uint32_t pswdLength) {
 	loopedInput(args.minLength, validator);
 	std::cout << "Provide a hint of maximal password length:" << std::endl;
 	loopedInput(args.maxLength, validator);
-	if(!args.minLength)
-		args.minLength = 1;
 	return true;
 }
 
@@ -126,58 +130,106 @@ double getMs(double raw) {
 
 // ················· //
 
-bool welcome() {
+void welcome() {
 	std::cout << "This is a simple password guesser.\n" << std::endl;
-	return true;
 }
 
-bool logAction(uint32_t possibleChars, uint32_t length) {
+void logActionStart(uint32_t possibleItems, uint32_t length) {
 	std::cout << "Testing for " << length << " length: "
-		<< pow(possibleChars, length) << " possible combinations." << std::endl;
-	return true;
+		<< pow(possibleItems, length) << " possible combinations... " << std::endl;
 }
 
-bool showResult(bool found, double& ms) {
+void logActionEnd(double ms) {
+	std::cout << " ...took " << ms << " ms." << std::endl;
+}
+
+void showResult(bool found, double& ms) {
 	std::cout << (found ? "Guessed!" : "Not guessed.") << std::endl;
 	std::cout << "Operation took " << ms << " miliseconds." << std::endl;
-	return true;
 }
 
 // ················· //
 
-// There's no need to return the password, as user will know it.
-bool guess(Args& args, const pswdChecker& verifier) {
+// This function calls match() for the subsequent values of password length.
+// Note: There's no need to return the password, as user will know it.
+template<typename Chain>
+bool guess(Args<Chain>& args, const std::function<bool(Chain&)>& verifier) {
 	for(uint32_t i = args.minLength; i <= args.maxLength; ++i) {
-		std::string s; // it can be returned.
-		logAction(args.possibleChars.size(), i);
-		bool result = match(args.possibleChars, i, s, 0, verifier);
+		Chain c; // it can be returned.
+		// It can be turned off, to improve overall speed
+		#if SUBLOGS
+			logActionStart(args.possibleItems.size(), i);
+			clock_t start = clock();
+		#endif
+		
+		bool result = match(args.possibleItems, i, c, 0, verifier);
+		
+		#if SUBLOGS
+			clock_t end = clock();
+			logActionEnd(getMs(end - start));
+		#endif
+		
 		if(result) return true;
 	}
 	return false;
 }
 
+// Checks all combinations for given password length.
 // Real result can be accessed by reference.
-bool match(std::string& possibleChars, uint32_t length, std::string& tested, uint32_t pswdPos, const pswdChecker& verify) {
+template<typename Chain>
+bool match(Chain& possibleItems, uint32_t length, Chain& tested, uint32_t pswdPos, const std::function<bool(Chain&)>& verify) {
 	if(!tested.size()) { // not initialized yet
-		tested = std::string(length, possibleChars[0]);
+		tested = Chain(length, possibleItems[0]);
 	}
-	for(uint32_t i = 0; i < possibleChars.size(); ++i) {
-		tested[pswdPos] = possibleChars[i];
+	// For each available item, insert it at current position, and...
+	for(uint32_t i = 0; i < possibleItems.size(); ++i) {
+		tested[pswdPos] = possibleItems[i];
 		bool result;
-		if(pswdPos + 1 >= length) {
+		if(pswdPos + 1 >= length) { // it's the last position, verify
 			result = verify(tested);
-		} else {
-			result = match(possibleChars, length, tested, pswdPos + 1, verify);
+		} else { // it is not the last position, dig deeper
+			result = match(possibleItems, length, tested, pswdPos + 1, verify);
 		}
 		if(result) return result;
+		// else continue
 	}
 	return false;
 }
 
 // ················· //
 
-// It works, but it is not good enough at the user side.
-bool turnErrCatcher() {
+template<typename Chain> bool getHints(Args<Chain>& hints, Chain& pswd) {
+	getLenHint(hints, pswd.size());
+	hints.possibleItems = getPossibleWords<Chain>(pswd);
+	return true;
+}
+
+template<typename Chain> bool runGuesswork(Chain& pswd, double& ntime) {
+	Args<Chain> hints;
+	getHints(hints, pswd);
+	// anon function
+	std::function<bool(Chain&)> verifier = [pswd](Chain& proposition) -> bool {
+		if(pswd.size() != proposition.size()) return false; // faster
+		return std::equal(pswd.begin(), pswd.end(), proposition.begin());
+	};
+	// start timer and go
+	clock_t before = clock();
+	bool result = guess(hints, verifier);
+	clock_t after = clock();
+	ntime = getMs(after - before);
+ 	return result;
+}
+
+bool turn(double& ntime) {
+	strarr arr = getPassword();
+	if(arr.size() > 1) {
+		return runGuesswork<strarr>(arr, ntime);
+	} else if(arr.size() == 1) {
+		return runGuesswork<std::string>(arr[0], ntime);
+	} else throw std::logic_error("[bool turn()]: Unexpected contition!");
+}
+
+bool startTurn() {
 	try {
 		double took;
 		bool result = turn(took);
@@ -197,25 +249,9 @@ bool turnErrCatcher() {
 	return true;
 }
 
-bool turn(double& ntime) {
-	Args hints;
-	std::string pswd = getPassword();
-	getLenHint(hints, pswd.size());
-	hints.possibleChars = getPossibleChars(pswd);
- 	// matches(pswd); // init
- 	auto verifier = [pswd](std::string& proposition) -> bool {
-		return pswd == proposition;
-	};
-	clock_t before = clock();
-	bool result = guess(hints, verifier);
-	clock_t after = clock();
-	ntime = getMs(after - before);
- 	return result;
-}
-
 bool programLoop() {
 	while(true) {
-		if(!turnErrCatcher())
+		if(!startTurn())
 			break; // decided to quit
 		std::cout << std::endl;
 	}
